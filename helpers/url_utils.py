@@ -11,6 +11,7 @@ import html
 import logging
 import re
 import sys
+import uuid
 from typing import TYPE_CHECKING
 from urllib.parse import unquote, urlparse, urlunparse
 
@@ -125,9 +126,17 @@ def get_album_name(soup: BeautifulSoup) -> str | None:
     )
 
     if not name_container:
-        return None
+        random_name = f"album_{uuid.uuid4().hex[:12]}"
+        logging.warning(f"Failed to extract album name from HTML, using: {random_name}")
+        return random_name
 
-    raw_album_name = name_container.find("h1").get_text(strip=True)
+    h1_tag = name_container.find("h1")
+    if h1_tag is None:
+        random_name = f"album_{uuid.uuid4().hex[:12]}"
+        logging.warning(f"Failed to extract album name from h1 tag, using: {random_name}")
+        return random_name
+    
+    raw_album_name = h1_tag.get_text(strip=True)
     unescaped_album_name = html.unescape(raw_album_name)
 
     # Attempt to fix mojibake (UTF-8 bytes mis-decoded as Latin-1). If encoding/decoding

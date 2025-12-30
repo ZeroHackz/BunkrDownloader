@@ -61,6 +61,13 @@ class AlbumDownloader:
                 failed_download = await asyncio.to_thread(media_downloader.download)
                 if failed_download:
                     self.failed_downloads.append(failed_download)
+            else:
+                # Skip this item if no download link could be obtained
+                self.live_manager.update_log(
+                    "Download skipped",
+                    f"Failed to get download link for: {item_page}",
+                )
+                self.live_manager.update_task(task, completed=100, visible=False)
 
     async def download_album(self, max_workers: int = MAX_WORKERS) -> None:
         """Handle the album download."""

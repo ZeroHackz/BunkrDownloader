@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -70,9 +71,12 @@ async def extract_all_album_item_pages(
 async def get_item_download_link(
     item_url: str,
     soup: BeautifulSoup | None = None,
-) -> str:
+) -> str | None:
     """Retrieve the download link for a specific item from its HTML content."""
     api_response = get_api_response(item_url, soup=soup)
+    if api_response is None:
+        logging.warning(f"Failed to get API response for {item_url}")
+        return None
     return decrypt_url(api_response)
 
 
@@ -82,6 +86,10 @@ def get_item_filename(item_soup: BeautifulSoup) -> str:
         "h1",
         {"class": "text-subs font-semibold text-base sm:text-lg truncate"},
     )
+    if item_filename_container is None:
+        random_filename = f"file_{uuid.uuid4().hex[:12]}"
+        logging.warning(f"Failed to extract filename from HTML, using: {random_filename}")
+        return random_filename
     item_filename = item_filename_container.get_text()
     return item_filename.encode("latin1").decode("utf-8")
 
@@ -111,6 +119,11 @@ def format_item_filename(original_filename: str, url_based_filename: str) -> str
 async def get_download_info(item_url: str, item_soup: BeautifulSoup) -> tuple:
     """Gather download information (link and filename) for the item."""
     item_download_link = await get_item_download_link(item_url, soup=item_soup)
+    
+    # If we couldn't get the download link, return None for both values
+    if item_download_link is None:
+        return None, None
+    
     item_filename = get_item_filename(item_soup)
 
     url_based_filename = (
