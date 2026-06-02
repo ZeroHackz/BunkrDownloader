@@ -5,23 +5,13 @@ This project is a fork of the original [BunkrDownloader by Lysagxra](https://git
 This version focuses on providing an user-friendly **Graphical User Interface (GUI)** for Windows users and includes other features to make downloading as simple as possible.
 
 ### Screenshots
-*Screen application `BunkrDownloader-portable-GUI.exe` in single mode.*
+*Download tab: paste a URL or load a batch file, watch live progress in the log.*
 
-![Bunkr Downloader GUI](screenshots/screenshot-single-mode.PNG)
+![Download tab](screenshots/screenshot-download-tab.png)
 
-*Screen of an completed request interface in single mode `BunkrDownloader-portable-GUI.exe`.*
+*Settings tab: save folder, concurrent downloads, retries, filters, and advanced toggles.*
 
-![Download in progress](screenshots/screenshot-single-mode-active.PNG)
-
-*Screen application `BunkrDownloader-portable-GUI.exe` in load from file mode.*
-
-![Download in progress](screenshots/screenshot-load-from-file.PNG)
-
-*Screen of an completed request interface in load from file mode `BunkrDownloader-portable-GUI.exe`.*
-
-![Download in progress](screenshots/screenshot-load-from-file-active.PNG)
-
-*Real-time download progress and logs.*
+![Settings tab](screenshots/screenshot-settings-tab.png)
 
 ## ✨ Features
 
