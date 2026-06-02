@@ -16,7 +16,7 @@ import customtkinter as ctk
 from src.config import DOWNLOAD_FOLDER, MAX_RETRIES, MAX_WORKERS
 from src.version import __version__ as BACKEND_VERSION
 
-GUI_VERSION = "2025.11.22"
+GUI_VERSION = "2026.06.02"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
 
 ctk.set_appearance_mode("dark")
