@@ -32,7 +32,7 @@ from .file_utils import write_on_session_log
 from .url_utils import change_domain_to_cr
 
 if TYPE_CHECKING:
-    from helpers.managers.live_manager import LiveManager
+    from src.managers.live_manager import LiveManager
 
 
 def validate_download_link(download_link: str) -> bool:

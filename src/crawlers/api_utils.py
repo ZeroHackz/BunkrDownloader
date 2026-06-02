@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 
 import requests
 
-from helpers.config import BUNKR_API, HTTPStatus
-from helpers.url_utils import get_identifier
+from src.config import BUNKR_API, HTTPStatus
+from src.url_utils import get_identifier
 
 if TYPE_CHECKING:
     from bs4 import BeautifulSoup

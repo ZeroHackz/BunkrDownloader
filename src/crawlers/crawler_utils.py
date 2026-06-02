@@ -8,8 +8,8 @@ import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from helpers.general_utils import fetch_page
-from helpers.url_utils import get_url_based_filename
+from src.general_utils import fetch_page
+from src.url_utils import get_url_based_filename
 
 from .api_utils import decrypt_url, get_api_response
 

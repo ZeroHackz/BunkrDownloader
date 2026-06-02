@@ -19,7 +19,7 @@ from rich.box import SIMPLE
 from rich.panel import Panel
 from rich.table import Table
 
-from helpers.config import LOG_MANAGER_COLORS, MIN_COLUMN_WIDTHS
+from src.config import LOG_MANAGER_COLORS, MIN_COLUMN_WIDTHS
 
 logging.basicConfig(level=logging.INFO, format="%(message)s")
 

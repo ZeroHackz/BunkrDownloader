@@ -7,10 +7,10 @@ integrating with live task displays.
 import asyncio
 from asyncio import Semaphore
 
-from helpers.config import MAX_WORKERS, AlbumInfo, DownloadInfo, SessionInfo
-from helpers.crawlers.crawler_utils import get_download_info
-from helpers.general_utils import fetch_page
-from helpers.managers.live_manager import LiveManager
+from src.config import MAX_WORKERS, AlbumInfo, DownloadInfo, SessionInfo
+from src.crawlers.crawler_utils import get_download_info
+from src.general_utils import fetch_page
+from src.managers.live_manager import LiveManager
 
 from .media_downloader import MediaDownloader
 

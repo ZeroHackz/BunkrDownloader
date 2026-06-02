@@ -14,19 +14,19 @@ from typing import TYPE_CHECKING
 import requests
 from requests import RequestException
 
-from helpers.bunkr_utils import mark_subdomain_as_offline, subdomain_is_offline
-from helpers.config import (
+from src.bunkr_utils import mark_subdomain_as_offline, subdomain_is_offline
+from src.config import (
     DOWNLOAD_HEADERS,
     DownloadInfo,
     HTTPStatus,
     SessionInfo,
 )
-from helpers.file_utils import truncate_filename, write_on_session_log
+from src.file_utils import truncate_filename, write_on_session_log
 
 from .download_utils import save_file_with_progress
 
 if TYPE_CHECKING:
-    from helpers.managers.live_manager import LiveManager
+    from src.managers.live_manager import LiveManager
 
 
 class MediaDownloader:

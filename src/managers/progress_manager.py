@@ -18,7 +18,7 @@ from rich.progress import (
 )
 from rich.table import Column, Table
 
-from helpers.config import (
+from src.config import (
     PROGRESS_COLUMNS_SEPARATOR,
     PROGRESS_MANAGER_COLORS,
     ProgressConfig,

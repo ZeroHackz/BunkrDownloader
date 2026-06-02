@@ -12,7 +12,7 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from helpers.config import DOWNLOAD_FOLDER, MAX_WORKERS
+from src.config import DOWNLOAD_FOLDER, MAX_WORKERS
 
 GUI_VERSION = "2025.11.22"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
