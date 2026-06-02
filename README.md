@@ -31,7 +31,10 @@ This fork includes all the powerful core features from the original, plus:
 *   **Graphical User Interface (GUI):** A simple and intuitive interface for downloading. No command line needed!
 *   **Portable Windows Executable:** Download and run the application directly without needing to install Python or any dependencies.
 *   **Easy URL Pasting:** A convenient "Paste" button to quickly insert a Bunkr URL from your clipboard.
-*   **File Browser:** A "Browse" button to easily select your URL list file when in "From File" mode.
+*   **File Browser:** A "Browse" button to easily select your URL list file when in "Batch from file" mode.
+*   **Settings Tab:** Tweak the save folder, max concurrent downloads, retries, and include/exclude filters without touching the command line.
+*   **Stop Button:** Cancel a batch mid-run — the current URL finishes, the rest are skipped.
+*   **Detailed CLI Window (optional):** Toggle in Settings to spawn each download in its own console for the full Rich progress bars.
 *   **Automatic Folder Opening:** Once your download is complete, the folder containing the files will automatically open.
 *   **Build & Setup Scripts:** Comes with `.bat` scripts to easily set up the environment and build the executable from source.
 
@@ -51,7 +54,7 @@ This fork includes all the powerful core features from the original, plus:
 3.  Run the application.
 4.  **Choose your download mode:**
     *   **For a single link:** Leave it on "Single URL", paste your Bunkr URL, and click **Download**.
-    *   **For multiple links:** Select "From File", click **Browse** to select your `.txt` file, and then click **Download**.
+    *   **For multiple links:** Select "Batch from file", click **Browse** to select your `.txt` file, and then click **Download**.
 5.  That's it!
 
 ## 🛠️ For Developers (Building from Source)
@@ -88,10 +91,10 @@ python downloader.py <bunkr_url>
 
 ### Selective & Batch Downloads
 
-All the original flags like `--ignore`, `--include`, and batch downloading via `URLs.txt` are still supported.
+All the original flags like `--ignore`, `--include`, and batch downloading via `URLs.txt` are still supported. The recent upstream sync also adds `--custom-path`, `--max-retries`, `--disable-disk-check`, `--no-download-folder`, and `--version`.
  
 For more details, please refer to the [Lysagxra README](https://github.com/Lysagxra/BunkrDownloader/blob/main/README.md).
 
 ## Logging
 
-The application logs any issues encountered during the download process in a file named `session_log.txt`. Check this file for any URLs that may have been blocked or had errors.
+The application logs any issues encountered during the download process in a file named `session.log`. Check this file for any URLs that may have been blocked or had errors.
