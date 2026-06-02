@@ -1,5 +1,5 @@
 """
-This module contains the graphical user interface for the Bunkr Downloader.
+Graphical user interface for the Bunkr Downloader.
 """
 import asyncio
 import io
@@ -7,243 +7,444 @@ import os
 import platform
 import sys
 import threading
+import webbrowser
 from tkinter import filedialog
+
 import customtkinter as ctk
-from downloader import main as downloader_main
+
+from helpers.config import DOWNLOAD_FOLDER, MAX_WORKERS
 
 GUI_VERSION = "2025.11.22"
+GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
+
+ctk.set_appearance_mode("dark")
+ctk.set_default_color_theme("blue")
+
 
 def resource_path(relative_path):
-    """ Get absolute path to resource, works for dev and for PyInstaller """
+    """Get absolute path to resource, works for dev and for PyInstaller."""
     try:
-        # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
     except AttributeError:
         base_path = os.path.abspath(".")
-
     return os.path.join(base_path, relative_path)
 
+
+class IORedirector(io.StringIO):
+    """Thread-safe stdout redirector that writes to a CTkTextbox via after()."""
+
+    def __init__(self, textbox, root):
+        super().__init__()
+        self.textbox = textbox
+        self.root = root
+
+    def write(self, text):
+        def _append():
+            self.textbox.configure(state="normal")
+            self.textbox.insert("end", text)
+            self.textbox.see("end")
+            self.textbox.configure(state="disabled")
+        self.root.after(0, _append)
+
+    def flush(self):
+        pass
+
+
 class DownloaderUI(ctk.CTk):
-    """
-    A class to represent the Downloader UI.
-    """
+    """Main application window for the Bunkr Downloader."""
+
     def __init__(self):
         super().__init__()
 
         self.title("Bunkr Downloader")
-        self.geometry("550x550")
+        self.geometry("700x720")
+        self.minsize(600, 580)
+        self._stop_requested = False
 
         try:
-            # Set window icon
             icon_path = resource_path(os.path.join("misc", "gui", "icons", "icon.ico"))
             self.after(200, lambda: self.iconbitmap(icon_path))
-        except ctk.TclError as e:
-            # Use original stdout if icon loading fails, as sys.stdout is redirected
-            print(f"Error loading icon: {e}", file=sys.__stdout__)
+        except Exception:
+            pass
 
         self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
-        # --- Download Mode ---
-        self.mode_frame = ctk.CTkFrame(self)
-        self.mode_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="ew")
-        self.mode_label = ctk.CTkLabel(self.mode_frame, text="Download Mode:")
-        self.mode_label.pack(side="left", padx=10, pady=10)
+        # Shared StringVar for download destination (Download tab + Settings tab stay in sync)
+        self.dest_var = ctk.StringVar(value=DOWNLOAD_FOLDER)
 
-        self.download_mode = ctk.StringVar(value="url")
-        self.radio_url = ctk.CTkRadioButton(self.mode_frame,
-                                              text="Single URL",
-                                              variable=self.download_mode,
-                                              value="url",
-                                              command=self.toggle_mode)
-        self.radio_url.pack(side="left", padx=10, pady=10)
-        self.radio_file = ctk.CTkRadioButton(self.mode_frame,
-                                               text="Load URLs from file",
-                                               variable=self.download_mode,
-                                               value="file",
-                                               command=self.toggle_mode)
-        self.radio_file.pack(side="left", padx=10, pady=10)
+        # Tab view
+        self.tabs = ctk.CTkTabview(self)
+        self.tabs.grid(row=0, column=0, padx=16, pady=(16, 8), sticky="nsew")
 
-        # --- URL Input Frame ---
-        self.url_input_frame = ctk.CTkFrame(self)
-        self.url_input_frame.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
-        self.url_input_frame.grid_columnconfigure(0, weight=1)
+        self.tab_dl = self.tabs.add("  Download  ")
+        self.tab_settings = self.tabs.add("  Settings  ")
+        self.tab_about = self.tabs.add("  About  ")
 
-        self.url_label = ctk.CTkLabel(self.url_input_frame, text="Bunkr URL:")
-        self.url_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 0), sticky="w")
+        self._build_download_tab()
+        self._build_settings_tab()
+        self._build_about_tab()
 
-        self.url_entry = ctk.CTkEntry(self.url_input_frame, placeholder_text="Enter Bunkr URL")
-        self.url_entry.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+        # Must call after tabs are built (accesses self.mode)
+        self._toggle_mode()
 
-        self.paste_button = ctk.CTkButton(self.url_input_frame,
-                                              text="Paste",
-                                              command=self.paste_from_clipboard,
-                                              width=50,
-                                              fg_color="red",
-                                              hover_color="#CC0000")
-        self.paste_button.grid(row=1, column=1, padx=(0, 10), pady=10)
+        # Status bar
+        self.status_var = ctk.StringVar(value="Ready")
+        ctk.CTkLabel(self, textvariable=self.status_var, anchor="w",
+                     text_color="gray60").grid(
+            row=1, column=0, padx=20, pady=(0, 10), sticky="ew")
 
-        # --- File Input Frame ---
-        self.file_input_frame = ctk.CTkFrame(self)
-        self.file_input_frame.grid_columnconfigure(0, weight=1)
+        # Redirect stdout so downloader print() output flows into the log
+        sys.stdout = IORedirector(self.log, self)
 
-        self.file_label = ctk.CTkLabel(self.file_input_frame, text="Path to URLs text file:")
-        self.file_label.grid(row=0, column=0, columnspan=2, padx=10, pady=(10, 0), sticky="w")
+    # ─────────────────────────────────────────────────────────────────────────
+    # Tab builders
+    # ─────────────────────────────────────────────────────────────────────────
 
-        self.file_entry = ctk.CTkEntry(self.file_input_frame, placeholder_text="Select a .txt file")
-        self.file_entry.grid(row=1, column=0, padx=10, pady=10, sticky="ew")
+    def _build_download_tab(self):
+        tab = self.tab_dl
+        tab.grid_columnconfigure(0, weight=1)
+        tab.grid_rowconfigure(6, weight=1)
 
-        self.browse_button = ctk.CTkButton(self.file_input_frame,
-                                             text="Browse",
-                                             command=self.browse_file,
-                                             width=50)
-        self.browse_button.grid(row=1, column=1, padx=(0, 10), pady=10)
+        # Mode toggle
+        mode_frame = ctk.CTkFrame(tab)
+        mode_frame.grid(row=0, column=0, padx=0, pady=(0, 10), sticky="ew")
+        ctk.CTkLabel(mode_frame, text="Download mode:").pack(
+            side="left", padx=(12, 8), pady=10)
+        self.mode = ctk.StringVar(value="url")
+        ctk.CTkRadioButton(mode_frame, text="Single URL",
+                           variable=self.mode, value="url",
+                           command=self._toggle_mode).pack(side="left", padx=8, pady=10)
+        ctk.CTkRadioButton(mode_frame, text="Batch from file",
+                           variable=self.mode, value="file",
+                           command=self._toggle_mode).pack(side="left", padx=8, pady=10)
 
-        # --- Common UI Elements ---
-        self.download_button = ctk.CTkButton(self, text="Download", command=self.start_download)
-        self.download_button.grid(row=2, column=0, padx=20, pady=20)
+        # URL input frame
+        self.url_frame = ctk.CTkFrame(tab)
+        self.url_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self.url_frame,
+                     text="Bunkr URL:").grid(
+            row=0, column=0, columnspan=2, padx=12, pady=(10, 2), sticky="w")
+        self.url_entry = ctk.CTkEntry(
+            self.url_frame, placeholder_text="Paste a Bunkr album or file URL here…")
+        self.url_entry.grid(row=1, column=0, padx=(12, 6), pady=(0, 10), sticky="ew")
+        ctk.CTkButton(self.url_frame, text="Paste", width=70,
+                      fg_color="#c0392b", hover_color="#922b21",
+                      command=self._paste_url).grid(
+            row=1, column=1, padx=(0, 12), pady=(0, 10))
 
-        self.progress_bar = ctk.CTkProgressBar(self, orientation="horizontal")
-        self.progress_bar.set(0)
-        self.progress_bar.grid(row=3, column=0, padx=20, pady=10, sticky="ew")
-        self.status_textbox = ctk.CTkTextbox(self, height=200)
-        self.status_textbox.grid(row=4, column=0, padx=20, pady=(10, 5), sticky="nsew")
-        self.status_textbox.configure(state="disabled")
+        # Batch file input frame
+        self.file_frame = ctk.CTkFrame(tab)
+        self.file_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(self.file_frame,
+                     text="URL list file (.txt — one URL per line):").grid(
+            row=0, column=0, columnspan=2, padx=12, pady=(10, 2), sticky="w")
+        self.file_entry = ctk.CTkEntry(
+            self.file_frame, placeholder_text="Click Browse to select a .txt file…")
+        self.file_entry.grid(row=1, column=0, padx=(12, 6), pady=(0, 10), sticky="ew")
+        ctk.CTkButton(self.file_frame, text="Browse", width=80,
+                      command=self._browse_input_file).grid(
+            row=1, column=1, padx=(0, 12), pady=(0, 10))
 
-        self.info_label = ctk.CTkLabel(self, text=f"GUI v{GUI_VERSION} by ZeroHackz")
-        self.info_label.grid(row=5, column=0, padx=20, pady=(5, 20), sticky="s")
+        # Download destination
+        dest_frame = ctk.CTkFrame(tab)
+        dest_frame.grid(row=2, column=0, padx=0, pady=(0, 10), sticky="ew")
+        dest_frame.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(dest_frame, text="Save downloads to:").grid(
+            row=0, column=0, columnspan=2, padx=12, pady=(10, 2), sticky="w")
+        ctk.CTkEntry(dest_frame, textvariable=self.dest_var,
+                     placeholder_text="Choose a folder…").grid(
+            row=1, column=0, padx=(12, 6), pady=(0, 10), sticky="ew")
+        ctk.CTkButton(dest_frame, text="Browse", width=80,
+                      command=self._browse_dest_dir).grid(
+            row=1, column=1, padx=(0, 12), pady=(0, 10))
 
-        # Initial setup
-        self.toggle_mode()
+        # Action buttons
+        btn_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        btn_frame.grid(row=3, column=0, padx=0, pady=(0, 8), sticky="ew")
+        self.run_btn = ctk.CTkButton(btn_frame, text="▶  Download",
+                                     height=40,
+                                     font=ctk.CTkFont(size=15, weight="bold"),
+                                     command=self._start_download)
+        self.run_btn.pack(side="left", padx=(0, 10))
+        self.stop_btn = ctk.CTkButton(btn_frame, text="■  Stop",
+                                      height=40, width=100,
+                                      fg_color="#c0392b", hover_color="#922b21",
+                                      state="disabled",
+                                      command=self._stop)
+        self.stop_btn.pack(side="left", padx=(0, 10))
+        self.open_btn = ctk.CTkButton(btn_frame, text="Open folder",
+                                      height=40, width=130,
+                                      fg_color="gray30", hover_color="gray40",
+                                      command=self._open_dest)
+        self.open_btn.pack(side="left")
 
-        # Redirect stdout to the textbox
-        sys.stdout = self.redirect_stdout_to_textbox()
+        # Progress bar (indeterminate while running)
+        self.progress = ctk.CTkProgressBar(tab, mode="indeterminate")
+        self.progress.grid(row=4, column=0, padx=0, pady=(0, 6), sticky="ew")
+        self.progress.set(0)
 
-    def toggle_mode(self):
-        """Toggles the UI between URL input and file input modes."""
-        if self.download_mode.get() == "url":
-            self.url_input_frame.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
-            self.file_input_frame.grid_forget()
+        # Log output — dark, monospace, expands to fill space
+        self.log = ctk.CTkTextbox(tab,
+                                  font=ctk.CTkFont(family="Consolas", size=10),
+                                  fg_color="#1a1a1a", text_color="#d4d4d4",
+                                  wrap="word")
+        self.log.grid(row=6, column=0, padx=0, pady=(0, 4), sticky="nsew")
+        self.log.configure(state="disabled")
+
+    def _build_settings_tab(self):
+        tab = self.tab_settings
+        tab.grid_columnconfigure(1, weight=1)
+
+        row = 0
+
+        def section(text, r):
+            ctk.CTkLabel(tab, text=text,
+                         font=ctk.CTkFont(size=13, weight="bold"),
+                         text_color="gray70").grid(
+                row=r, column=0, columnspan=2, padx=4, pady=(18, 6), sticky="w")
+
+        # ── Download ──────────────────────────────────────────────────────────
+        section("Download", row); row += 1
+
+        ctk.CTkLabel(tab, text="Default save folder:", anchor="w").grid(
+            row=row, column=0, padx=(4, 8), pady=4, sticky="w")
+        dest_row = ctk.CTkFrame(tab, fg_color="transparent")
+        dest_row.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        dest_row.grid_columnconfigure(0, weight=1)
+        ctk.CTkEntry(dest_row, textvariable=self.dest_var,
+                     placeholder_text="e.g. C:\\Downloads\\Bunkr").grid(
+            row=0, column=0, padx=(0, 6), sticky="ew")
+        ctk.CTkButton(dest_row, text="Browse", width=80,
+                      command=self._browse_dest_dir).grid(row=0, column=1)
+        row += 1
+
+        ctk.CTkLabel(tab, text="Max concurrent downloads:", anchor="w").grid(
+            row=row, column=0, padx=(4, 8), pady=4, sticky="w")
+        workers_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        workers_frame.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        self.workers_label = ctk.CTkLabel(workers_frame,
+                                          text=str(MAX_WORKERS), width=24)
+        self.workers_label.pack(side="right")
+        self.workers_slider = ctk.CTkSlider(workers_frame, from_=1, to=5,
+                                            number_of_steps=4,
+                                            command=self._on_workers_change)
+        self.workers_slider.set(MAX_WORKERS)
+        self.workers_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        row += 1
+
+        # ── File filters ──────────────────────────────────────────────────────
+        section("File filters", row); row += 1
+
+        ctk.CTkLabel(tab, text="Include only (keywords):", anchor="w").grid(
+            row=row, column=0, padx=(4, 8), pady=4, sticky="w")
+        self.settings_include = ctk.CTkEntry(
+            tab, placeholder_text="e.g.  mp4  jpg  png  — leave blank for everything")
+        self.settings_include.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        row += 1
+
+        ctk.CTkLabel(tab, text="Exclude (keywords):", anchor="w").grid(
+            row=row, column=0, padx=(4, 8), pady=4, sticky="w")
+        self.settings_exclude = ctk.CTkEntry(
+            tab, placeholder_text="e.g.  .thumb  preview  sample")
+        self.settings_exclude.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        row += 1
+
+        ctk.CTkLabel(tab,
+                     text="Space-separated keywords. Leave both blank to download everything.",
+                     text_color="gray50",
+                     font=ctk.CTkFont(size=11)).grid(
+            row=row, column=0, columnspan=2, padx=4, pady=(2, 0), sticky="w")
+
+    def _build_about_tab(self):
+        tab = self.tab_about
+        tab.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(tab, text="Bunkr Downloader",
+                     font=ctk.CTkFont(size=26, weight="bold")).grid(
+            row=0, column=0, pady=(30, 4))
+        ctk.CTkLabel(tab, text=f"GUI v{GUI_VERSION}  ·  by ZeroHackz",
+                     font=ctk.CTkFont(size=13), text_color="gray60").grid(
+            row=1, column=0, pady=(0, 20))
+
+        ctk.CTkLabel(tab,
+                     text="A clean GUI for downloading Bunkr albums and files.\n"
+                          "Supports both single URLs and batch downloads from a text file.",
+                     wraplength=480, justify="center").grid(
+            row=2, column=0, pady=(0, 28))
+
+        ctk.CTkButton(tab, text="View on GitHub →",
+                      fg_color="gray25", hover_color="gray35",
+                      command=lambda: webbrowser.open(GITHUB_URL)).grid(
+            row=3, column=0, pady=6)
+
+        ctk.CTkLabel(tab, text="MIT License", text_color="gray50").grid(
+            row=4, column=0, pady=(24, 0))
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # UI helpers
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _toggle_mode(self):
+        if self.mode.get() == "url":
+            self.url_frame.grid(row=1, column=0, padx=0, pady=(0, 10), sticky="ew")
+            self.file_frame.grid_forget()
         else:
-            self.file_input_frame.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
-            self.url_input_frame.grid_forget()
+            self.file_frame.grid(row=1, column=0, padx=0, pady=(0, 10), sticky="ew")
+            self.url_frame.grid_forget()
 
-    def browse_file(self):
-        """Opens a file dialog to select a file containing URLs."""
-        file_path = filedialog.askopenfilename(
-            title="Select a URL file",
-            filetypes=(("Text files", "*.txt"), ("All files", "*.*"))
-        )
-        if file_path:
-            self.file_entry.delete(0, "end")
-            self.file_entry.insert(0, file_path)
-
-    def paste_from_clipboard(self):
-        """Pastes content from the clipboard into the URL entry field."""
+    def _paste_url(self):
         try:
-            clipboard_content = self.clipboard_get()
             self.url_entry.delete(0, "end")
-            self.url_entry.insert(0, clipboard_content)
-        except ctk.TclError:
-            self.status_textbox.configure(state="normal")
-            self.status_textbox.delete("1.0", "end")
-            self.status_textbox.insert("end", "Could not get text from clipboard.")
-            self.status_textbox.configure(state="disabled")
+            self.url_entry.insert(0, self.clipboard_get())
+        except Exception:
+            self._log("Could not read from clipboard.\n")
 
-    def redirect_stdout_to_textbox(self):
-        """Redirects stdout to the status textbox."""
-        class IORedirector(io.StringIO):
-            """A class to redirect stdout to a textbox."""
-            def __init__(self, textbox):
-                super().__init__()
-                self.textbox = textbox
+    def _browse_input_file(self):
+        path = filedialog.askopenfilename(
+            title="Select URL list file",
+            filetypes=[("Text files", "*.txt"), ("All files", "*.*")])
+        if path:
+            self.file_entry.delete(0, "end")
+            self.file_entry.insert(0, path)
 
-            def write(self, text):
-                self.textbox.configure(state="normal")
-                self.textbox.insert("end", text)
-                self.textbox.see("end")
-                self.textbox.configure(state="disabled")
+    def _browse_dest_dir(self):
+        d = filedialog.askdirectory(title="Select download folder")
+        if d:
+            self.dest_var.set(d)
 
-            def flush(self):
-                pass
+    def _open_dest(self):
+        d = self.dest_var.get().strip() or DOWNLOAD_FOLDER
+        if platform.system() == "Windows" and os.path.isdir(d):
+            os.startfile(d)
 
-        return IORedirector(self.status_textbox)
+    def _on_workers_change(self, value):
+        self.workers_label.configure(text=str(int(value)))
 
-    def start_download(self):
-        """Starts the download process."""
-        self.download_button.configure(state="disabled")
-        self.progress_bar.set(0)
-        self.status_textbox.configure(state="normal")
-        self.status_textbox.delete("1.0", "end")
-        self.status_textbox.configure(state="disabled")
+    def _log(self, text):
+        """Append text to the log textbox — safe to call from any thread."""
+        def _append():
+            self.log.configure(state="normal")
+            self.log.insert("end", text)
+            self.log.see("end")
+            self.log.configure(state="disabled")
+        self.after(0, _append)
 
-        mode = self.download_mode.get()
+    def _set_running(self, running: bool):
+        """Update button/progress states — safe to call from any thread."""
+        def _update():
+            if running:
+                self.run_btn.configure(state="disabled")
+                self.stop_btn.configure(state="normal")
+                self.progress.start()
+                self.progress.configure(mode="indeterminate")
+            else:
+                self.run_btn.configure(state="normal")
+                self.stop_btn.configure(state="disabled")
+                self.progress.stop()
+                self.progress.configure(mode="determinate")
+                self.progress.set(0)
+        self.after(0, _update)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Download logic
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _start_download(self):
+        # Clear log
+        self.log.configure(state="normal")
+        self.log.delete("1.0", "end")
+        self.log.configure(state="disabled")
+
+        mode = self.mode.get()
         if mode == "url":
-            url = self.url_entry.get()
+            url = self.url_entry.get().strip()
             if not url:
-                self.status_textbox.configure(state="normal")
-                self.status_textbox.insert("end", "Please enter a URL.")
-                self.status_textbox.configure(state="disabled")
-                self.download_button.configure(state="normal")
+                self._log("Please enter a Bunkr URL before clicking Download.\n")
                 return
             urls = [url]
-        else: # mode == "file"
-            file_path = self.file_entry.get()
+        else:
+            file_path = self.file_entry.get().strip()
             if not file_path:
-                self.status_textbox.configure(state="normal")
-                self.status_textbox.insert("end", "Please select a file.")
-                self.status_textbox.configure(state="disabled")
-                self.download_button.configure(state="normal")
+                self._log("Please select a .txt file containing URLs.\n")
                 return
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
+                with open(file_path, "r", encoding="utf-8") as f:
                     urls = [line.strip() for line in f if line.strip()]
                 if not urls:
-                    self.status_textbox.configure(state="normal")
-                    self.status_textbox.insert("end", "File is empty or contains no valid URLs.")
-                    self.status_textbox.configure(state="disabled")
-                    self.download_button.configure(state="normal")
+                    self._log("The selected file is empty or contains no valid URLs.\n")
                     return
             except (IOError, OSError) as e:
-                self.status_textbox.configure(state="normal")
-                self.status_textbox.insert("end", f"Error reading file: {e}")
-                self.status_textbox.configure(state="disabled")
-                self.download_button.configure(state="normal")
+                self._log(f"Could not read file: {e}\n")
                 return
 
-        # Run the downloader in a separate thread
-        download_thread = threading.Thread(target=self.run_downloader_batch, args=(urls,))
-        download_thread.start()
+        self._stop_requested = False
+        self._set_running(True)
+        self.status_var.set(f"Starting… (0 / {len(urls)})")
+        threading.Thread(target=self._run_batch, args=(urls,), daemon=True).start()
 
-    def run_downloader_batch(self, urls):
-        """Runs the downloader for a batch of URLs."""
-        total_urls = len(urls)
+    def _stop(self):
+        self._stop_requested = True
+        self._log("\n[Stop requested — finishing current download then stopping…]\n")
+        self.status_var.set("Stopping…")
+
+    def _run_batch(self, urls):
+        from downloader import main as downloader_main
+
+        total = len(urls)
+        completed = 0
+        failed = 0
+
         for i, url in enumerate(urls):
-            self.status_textbox.configure(state="normal")
-            self.status_textbox.insert("end", f"'\n--- Starting download for: {url} "
-                                                  f"({i+1}/{total_urls}) ---\n")
-            self.status_textbox.configure(state="disabled")
+            if self._stop_requested:
+                self._log(f"\n[Stopped — skipping {total - i} remaining URL(s)]\n")
+                self.after(0, lambda: self.status_var.set(
+                    f"Stopped — {completed} done, {failed} failed"))
+                break
+
+            self.after(0, lambda n=i: self.status_var.set(
+                f"Downloading {n + 1} / {total}…"))
+            self._log(f"\n{'─' * 60}\n")
+            self._log(f"  [{i + 1}/{total}]  {url}\n")
+            self._log(f"{'─' * 60}\n\n")
+
             try:
-                # Mock downloader arguments for each URL
-                sys.argv = ['downloader.py', url]
-                download_path = asyncio.run(downloader_main())
+                argv = ["downloader.py", url, "--disable-ui"]
 
-                self.status_textbox.configure(state="normal")
-                self.status_textbox.insert("end", f"\n--- Finished download for: {url} ---\n\n")
-                self.status_textbox.configure(state="disabled")
+                dest = self.dest_var.get().strip()
+                if dest:
+                    argv += ["--custom-path", dest]
 
-                # Open folder only after the last download
-                if i == total_urls - 1 and download_path and platform.system() == "Windows":
-                    os.startfile(download_path)
+                include = self.settings_include.get().strip().split()
+                exclude = self.settings_exclude.get().strip().split()
+                if include:
+                    argv += ["--include"] + include
+                if exclude:
+                    argv += ["--ignore"] + exclude
+
+                sys.argv = argv
+                asyncio.run(downloader_main())
+                completed += 1
+                self._log(f"\n  [OK]  Finished: {url}\n")
 
             except Exception as e:
-                self.status_textbox.configure(state="normal")
-                self.status_textbox.insert("end", f"\nAn error occurred with {url}: {e}\n\n")
-                self.status_textbox.configure(state="disabled")
-        self.status_textbox.configure(state="normal")
-        self.status_textbox.insert("end", "\nAll downloads finished!")
-        self.status_textbox.configure(state="disabled")
-        self.download_button.configure(state="normal")
-        self.progress_bar.set(1)
+                failed += 1
+                self._log(f"\n  [FAIL]  Error downloading {url}:\n     {e}\n")
+
+        else:
+            # Loop completed without break
+            summary = f"Done — {completed} succeeded"
+            if failed:
+                summary += f", {failed} failed"
+            self._log(f"\n{'═' * 60}\n  {summary}\n{'═' * 60}\n")
+            self.after(0, lambda s=summary: self.status_var.set(s))
+
+            # Open destination folder after last download
+            dest = self.dest_var.get().strip() or DOWNLOAD_FOLDER
+            if platform.system() == "Windows" and os.path.isdir(dest):
+                os.startfile(dest)
+
+        self._set_running(False)
 
 
 if __name__ == "__main__":
