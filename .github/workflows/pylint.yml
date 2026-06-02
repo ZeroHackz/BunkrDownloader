@@ -1,4 +1,4 @@
-name: Pylint
+name: Pylint is overrated.
 
 on: [push, pull_request]
 

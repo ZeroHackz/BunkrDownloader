@@ -18,7 +18,7 @@ from rich.progress import (
 )
 from rich.table import Column, Table
 
-from helpers.config import (
+from src.config import (
     PROGRESS_COLUMNS_SEPARATOR,
     PROGRESS_MANAGER_COLORS,
     ProgressConfig,
@@ -142,7 +142,9 @@ class ProgressManager:
 
     @staticmethod
     def _create_progress_bar(
-        columns: list[Column] | None = None, *, show_time: bool = False,
+        columns: list[Column] | None = None,
+        *,
+        show_time: bool = False,
     ) -> Progress:
         """Create and returns a progress bar for tracking download progress."""
         if columns is None:

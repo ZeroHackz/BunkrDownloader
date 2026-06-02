@@ -14,32 +14,39 @@ from typing import TYPE_CHECKING
 from requests.exceptions import ConnectionError as RequestConnectionError
 from requests.exceptions import RequestException, Timeout
 
-from helpers.bunkr_utils import get_bunkr_status
-from helpers.config import (
+from src.bunkr_utils import get_bunkr_status
+from src.config import (
     AlbumInfo,
     DownloadInfo,
     SessionInfo,
+    SkippedReason,
     parse_arguments,
 )
-from helpers.crawlers.crawler_utils import (
+from src.crawlers.crawler_utils import (
     extract_all_album_item_pages,
     get_download_info,
 )
-from helpers.downloaders.album_downloader import AlbumDownloader, MediaDownloader
-from helpers.file_utils import create_download_directory, format_directory_name
-from helpers.general_utils import (
+from src.downloaders.album_downloader import AlbumDownloader, MediaDownloader
+from src.file_utils import (
+    create_download_directory,
+    format_directory_name,
+    write_on_session_log,
+)
+from src.general_utils import (
     check_disk_space,
     check_python_version,
     clear_terminal,
     fetch_page,
 )
-from helpers.managers.live_manager import initialize_managers
-from helpers.url_utils import (
+from src.managers.live_manager import initialize_managers
+from src.url_utils import (
+    add_https_prefix,
     check_url_type,
     get_album_id,
     get_album_name,
     get_host_page,
     get_identifier,
+    log_unavailable_url,
 )
 
 if TYPE_CHECKING:
@@ -47,7 +54,7 @@ if TYPE_CHECKING:
 
     from bs4 import BeautifulSoup
 
-    from helpers.managers.live_manager import LiveManager
+    from src.managers.live_manager import LiveManager
 
 
 async def handle_download_process(
@@ -55,6 +62,7 @@ async def handle_download_process(
     url: str,
     initial_soup: BeautifulSoup,
     live_manager: LiveManager,
+    max_retries: int,
 ) -> None:
     """Handle the download process for a Bunkr album or a single item."""
     host_page = get_host_page(url)
@@ -68,7 +76,7 @@ async def handle_download_process(
             album_info=AlbumInfo(album_id=identifier, item_pages=item_pages),
             live_manager=live_manager,
         )
-        await album_downloader.download_album()
+        await album_downloader.download_album(max_retries=max_retries)
 
     # Single item download
     else:
@@ -79,6 +87,7 @@ async def handle_download_process(
         media_downloader = MediaDownloader(
             session_info=session_info,
             download_info=DownloadInfo(
+                item_url=url,
                 download_link=download_link,
                 filename=filename,
                 task=task,
@@ -95,17 +104,29 @@ async def validate_and_download(
     args: Namespace | None = None,
 ) -> None:
     """Validate the provided URL, and initiate the download process."""
-    soup = await fetch_page(url)
-    album_id = get_album_id(url) if check_url_type(url) else None
+    # Check the available disk space on the download path before starting the download
+    if not args.disable_disk_check:
+        check_disk_space(live_manager, custom_path=args.custom_path)
+
+    validated_url = add_https_prefix(url)
+    soup = await fetch_page(validated_url)
+
+    if soup is None:
+        write_on_session_log(
+            f"Request error for {url}", reason=SkippedReason.SERVICE_UNAVAILABLE,
+        )
+        log_unavailable_url(live_manager, validated_url)
+        return
+
+    album_id = get_album_id(validated_url) if check_url_type(validated_url) else None
     album_name = get_album_name(soup)
 
     directory_name = format_directory_name(album_name, album_id)
     download_path = create_download_directory(
-        directory_name, custom_path=args.custom_path,
+        directory_name,
+        custom_path=args.custom_path,
+        no_download_folder=args.no_download_folder,
     )
-
-    # Check the available disk space on the download path before starting the download.
-    check_disk_space(live_manager, custom_path=download_path)
     session_info = SessionInfo(
         args=args,
         bunkr_status=bunkr_status,
@@ -113,7 +134,13 @@ async def validate_and_download(
     )
 
     try:
-        await handle_download_process(session_info, url, soup, live_manager)
+        await handle_download_process(
+            session_info,
+            validated_url,
+            soup,
+            live_manager,
+            args.max_retries,
+        )
 
     except (RequestConnectionError, Timeout, RequestException) as err:
         error_message = f"Error downloading from {url}: {err}"

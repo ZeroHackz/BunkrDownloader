@@ -9,10 +9,22 @@ from __future__ import annotations
 import logging
 import os
 import re
+import shutil
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
-from .config import DOWNLOAD_FOLDER, MAX_FILENAME_LEN, SESSION_LOG
+from .config import (
+    BACKUP_FOLDER,
+    DOWNLOAD_FOLDER,
+    MAX_FILENAME_LEN,
+    SESSION_LOG,
+    URLS_FILE,
+    VALID_CHARACTERS_REGEX,
+    DownloadInfo,
+    FailedReason,
+    SkippedReason,
+)
 
 
 def read_file(filename: str) -> list[str]:
@@ -30,10 +42,35 @@ def write_file(filename: str, content: str = "") -> None:
         file.write(content)
 
 
-def write_on_session_log(content: str) -> None:
-    """Append content to the session log file."""
+def write_on_session_log(
+    content: str | DownloadInfo,
+    *,
+    reason: FailedReason | SkippedReason | None = None,
+    outcome: str | None = None,
+) -> None:
+    """Append a structured entry to the session log file."""
+    # Base entry: either extract fields from DownloadInfo or use the raw message
+    entry = (
+        {
+            "task": content.task,
+            "filename": content.filename,
+            "download_link": content.download_link,
+            "item_url": content.item_url,
+        }
+        if isinstance(content, DownloadInfo)
+        else {"message": content}
+    )
+
+    # Include optional metadata if provided
+    if outcome:
+        entry["outcome"] = outcome
+
+    if reason:
+        entry["reason"] = reason.name
+
+    # Append the entry to the session log file
     with Path(SESSION_LOG).open("a", encoding="utf-8") as file:
-        file.write(f"{content}\n")
+        file.write(f"{entry}\n")
 
 
 def format_directory_name(directory_name: str, directory_id: str | None) -> str | None:
@@ -63,6 +100,8 @@ def sanitize_directory_name(directory_name: str) -> str:
 def create_download_directory(
     directory_name: str,
     custom_path: str | None = None,
+    *,
+    no_download_folder: bool = False,
 ) -> str:
     """Create a directory for downloads if it doesn't exist."""
     # Sanitizing the directory name (album ID), if provided
@@ -71,9 +110,9 @@ def create_download_directory(
     )
 
     # Determine the base download path.
-    base_path = (
-        Path(custom_path) / DOWNLOAD_FOLDER if custom_path else Path(DOWNLOAD_FOLDER)
-    )
+    base_path = Path(custom_path or ".")  # default to current directory
+    if not no_download_folder:
+        base_path /= DOWNLOAD_FOLDER      # append DOWNLOAD_FOLDER only if needed
 
     # Albums containing a single file will be directly downloaded into the 'Downloads'
     # folder, without creating a subfolder for the album ID.
@@ -93,13 +132,30 @@ def create_download_directory(
     return str(download_path)
 
 
+def create_urls_file_backup() -> None:
+    """Create a timestamped backup of the URLs file in the configured backup folder."""
+    backup_folder = Path(BACKUP_FOLDER)
+
+    try:
+        backup_folder.mkdir(parents=True, exist_ok=True)
+
+    except OSError as os_err:
+        log_message = f"Error creating 'Backups' directory: {os_err}"
+        logging.exception(log_message)
+        sys.exit(1)
+
+    timestamp = datetime.now(timezone.utc).strftime("%d%m%Y_%H%M%S")
+    backup_file = Path(f"URLs_{timestamp}.bak")
+    shutil.copy2(URLS_FILE, backup_folder / backup_file)
+
+
 def remove_invalid_characters(text: str) -> str:
     """Remove invalid characters from the input string.
 
     This function keeps only letters (both uppercase and lowercase), digits, spaces,
     hyphens ('-'), and underscores ('_').
     """
-    return re.sub(r"[^a-zA-Z0-9 _-]", "", text)
+    return re.sub(VALID_CHARACTERS_REGEX, "", text)
 
 
 def truncate_filename(filename: str) -> str:

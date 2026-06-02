@@ -1,8 +1,8 @@
 """Utilities for fetching pages, managing directories, and clearing the terminal.
 
-It includes functions to handle common tasks such as sending HTTP requests,
-parsing HTML, creating download directories, and clearing the terminal, making it
-reusable across projects.
+It includes functions to handle common tasks such as sending HTTP requests, parsing
+HTML, creating download directories, and clearing the terminal, making it reusable
+across projects.
 """
 
 from __future__ import annotations
@@ -25,14 +25,14 @@ from requests import Response
 from .config import (
     DOWNLOAD_HEADERS,
     FETCH_ERROR_MESSAGES,
+    GB,
     MIN_DISK_SPACE_GB,
     HTTPStatus,
 )
-from .file_utils import write_on_session_log
-from .url_utils import change_domain_to_cr
+from .url_utils import replace_domain_with_fallback
 
 if TYPE_CHECKING:
-    from helpers.managers.live_manager import LiveManager
+    from src.managers.live_manager import LiveManager
 
 
 def validate_download_link(download_link: str) -> bool:
@@ -48,24 +48,24 @@ def validate_download_link(download_link: str) -> bool:
 
 async def fetch_page(url: str, retries: int = 5) -> BeautifulSoup | None:
     """Fetch the HTML content of a page at the given URL, with retry logic."""
-    tried_cr = False
+    tried_fallback = False
 
     def handle_response(response: Response) -> BeautifulSoup | None:
         """Process the HTTP response and handles specific status codes."""
         if response.status_code in FETCH_ERROR_MESSAGES:
             log_message = FETCH_ERROR_MESSAGES[response.status_code].format(url=url)
             logging.exception(log_message)
-            write_on_session_log(url)
             return None
 
-        return BeautifulSoup(response.text, "html.parser")
+        # Use raw bytes to let BS4 detect encoding
+        return BeautifulSoup(response.content, "html.parser")
 
     for attempt in range(retries):
         try:
             response = requests.Session().get(url, timeout=40)
-            if response.status_code == HTTPStatus.FORBIDDEN and not tried_cr:
-                tried_cr = True
-                url = change_domain_to_cr(url)
+            if response.status_code == HTTPStatus.FORBIDDEN and not tried_fallback:
+                tried_fallback = True
+                url = replace_domain_with_fallback(url)
                 continue  # Retry immediately with .cr
 
             response.raise_for_status()
@@ -80,9 +80,7 @@ async def fetch_page(url: str, retries: int = 5) -> BeautifulSoup | None:
                 await asyncio.sleep(delay)
 
         # Catch-all for request-related errors
-        except requests.RequestException as req_err:
-            log_message = f"Request error for {url}: {req_err}"
-            logging.exception(log_message)
+        except requests.RequestException:
             return None
 
     return None
@@ -126,12 +124,12 @@ def check_disk_space(live_manager: LiveManager, custom_path: str | None = None) 
     """Check if the available disk space is greater than or equal to `min_space` GB."""
     root_path = get_root_path() if custom_path is None else custom_path
     _, _, free_space = shutil.disk_usage(root_path)
-    free_space_gb = free_space / (1024 ** 3)
+    free_space_gb = free_space / GB
 
     if free_space_gb < MIN_DISK_SPACE_GB:
         live_manager.update_log(
-            "Insufficient disk space",
-            f"Only {free_space_gb:.2f} GB available on {root_path}. "
+            event="Insufficient disk space",
+            details=f"Only {free_space_gb:.2f} GB available on {root_path}. "
             "The program has been stopped to prevent data loss.",
         )
         sys.exit(1)

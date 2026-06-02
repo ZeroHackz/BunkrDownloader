@@ -7,8 +7,8 @@ from pathlib import Path
 from requests import Response
 from requests.exceptions import ChunkedEncodingError
 
-from helpers.config import LARGE_FILE_CHUNK_SIZE, THRESHOLDS
-from helpers.managers.progress_manager import ProgressManager
+from src.config import LARGE_FILE_CHUNK_SIZE, THRESHOLDS
+from src.managers.progress_manager import ProgressManager
 
 
 def get_chunk_size(file_size: int) -> int:
