@@ -19,6 +19,22 @@ from src.version import __version__ as BACKEND_VERSION
 GUI_VERSION = "2026.06.02"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
 
+# When running from a PyInstaller bundle, sys.executable is the GUI's own .exe
+# and there's no separate python.exe to invoke — instead we self-exec with the
+# `--gui-runner` sentinel to enter runner mode (see __main__ at the bottom).
+IS_FROZEN = getattr(sys, "frozen", False)
+
+
+def _child_python_exe():
+    """Prefer pythonw.exe so the child has no console window. Only used when
+    running from source — never returns the bundled .exe."""
+    exe = sys.executable
+    base = os.path.dirname(exe)
+    candidate = os.path.join(base, "pythonw.exe")
+    if os.path.isfile(candidate):
+        return candidate
+    return exe
+
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
@@ -77,7 +93,16 @@ class DownloaderUI(ctk.CTk):
         self.title("Bunkr Downloader")
         self.geometry("700x720")
         self.minsize(600, 580)
-        self._stop_requested = False
+        self._stop_requested = False      # Pause: skip remaining URLs after current
+        self._force_stop = False          # Stop: hard-kill current download
+        self._worker_thread = None        # Worker thread running _run_batch
+        self._active_proc = None          # External console subprocess (if used)
+        self._album_total = 0             # Files in the currently downloading album
+        self._album_done = 0              # Files finished so far in the album
+        self._active_files = []           # Filenames currently downloading
+        self._active_lock = threading.Lock()
+        self._url_index = 0               # 1-based URL index in the current batch
+        self._url_total = 0               # Total URLs in the current batch
 
         try:
             icon_path = resource_path(os.path.join("misc", "gui", "icons", "icon.ico"))
@@ -88,8 +113,11 @@ class DownloaderUI(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # Shared StringVar for download destination (Download tab + Settings tab stay in sync)
-        self.dest_var = ctk.StringVar(value=DOWNLOAD_FOLDER)
+        # Shared StringVar for download destination (Download tab + Settings tab stay in sync).
+        # Left blank by default so the backend uses its own './Downloads/' — pre-filling
+        # this with "Downloads" would pass --custom-path Downloads, and the backend
+        # would create Downloads/Downloads/<album>/.
+        self.dest_var = ctk.StringVar(value="")
 
         # Tab view
         self.tabs = ctk.CTkTabview(self)
@@ -180,7 +208,7 @@ class DownloaderUI(ctk.CTk):
         ctk.CTkLabel(dest_frame, text="Save downloads to:").grid(
             row=0, column=0, columnspan=2, padx=12, pady=(10, 2), sticky="w")
         ctk.CTkEntry(dest_frame, textvariable=self.dest_var,
-                     placeholder_text="Choose a folder…").grid(
+                     placeholder_text=f"Default: ./{DOWNLOAD_FOLDER}/  (click Browse to change)").grid(
             row=1, column=0, padx=(12, 6), pady=(0, 10), sticky="ew")
         ctk.CTkButton(dest_frame, text="Browse", width=80,
                       command=self._browse_dest_dir).grid(
@@ -194,6 +222,12 @@ class DownloaderUI(ctk.CTk):
                                      font=ctk.CTkFont(size=15, weight="bold"),
                                      command=self._start_download)
         self.run_btn.pack(side="left", padx=(0, 10))
+        self.pause_btn = ctk.CTkButton(btn_frame, text="❚❚  Pause",
+                                       height=40, width=100,
+                                       fg_color="#d97706", hover_color="#b45309",
+                                       state="disabled",
+                                       command=self._pause)
+        self.pause_btn.pack(side="left", padx=(0, 10))
         self.stop_btn = ctk.CTkButton(btn_frame, text="■  Stop",
                                       height=40, width=100,
                                       fg_color="#c0392b", hover_color="#922b21",
@@ -247,7 +281,7 @@ class DownloaderUI(ctk.CTk):
         dest_row.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
         dest_row.grid_columnconfigure(0, weight=1)
         ctk.CTkEntry(dest_row, textvariable=self.dest_var,
-                     placeholder_text="e.g. C:\\Downloads\\Bunkr").grid(
+                     placeholder_text=f"Default: ./{DOWNLOAD_FOLDER}/  —  e.g. C:\\MyDownloads").grid(
             row=0, column=0, padx=(0, 6), sticky="ew")
         ctk.CTkButton(dest_row, text="Browse", width=80,
                       command=self._browse_dest_dir).grid(row=0, column=1)
@@ -392,6 +426,22 @@ class DownloaderUI(ctk.CTk):
         if platform.system() == "Windows" and os.path.isdir(d):
             os.startfile(d)
 
+    def _refresh_album_status(self):
+        """Update the bottom status bar — safe to call from any thread."""
+        with self._active_lock:
+            done = self._album_done
+            total = self._album_total
+            active = list(self._active_files)
+
+        url_part = (f"URL {self._url_index}/{self._url_total}  ·  "
+                    if self._url_total > 1 else "")
+        if total > 0:
+            files_part = "  ·  " + ", ".join(active) if active else ""
+            text = f"{url_part}File {done}/{total}{files_part}"
+        else:
+            text = f"{url_part}Starting…" if url_part else "Starting…"
+        self.after(0, lambda t=text: self.status_var.set(t))
+
     def _on_workers_change(self, value):
         self.workers_label.configure(text=str(int(value)))
 
@@ -415,11 +465,13 @@ class DownloaderUI(ctk.CTk):
         def _update():
             if running:
                 self.run_btn.configure(state="disabled")
+                self.pause_btn.configure(state="normal")
                 self.stop_btn.configure(state="normal")
                 self.progress.start()
                 self.progress.configure(mode="indeterminate")
             else:
                 self.run_btn.configure(state="normal")
+                self.pause_btn.configure(state="disabled")
                 self.stop_btn.configure(state="disabled")
                 self.progress.stop()
                 self.progress.configure(mode="determinate")
@@ -459,14 +511,43 @@ class DownloaderUI(ctk.CTk):
                 return
 
         self._stop_requested = False
+        self._force_stop = False
+        self._active_proc = None
         self._set_running(True)
-        self.status_var.set(f"Starting… (0 / {len(urls)})")
-        threading.Thread(target=self._run_batch, args=(urls,), daemon=True).start()
+        self._url_index = 0
+        self._url_total = len(urls)
+        self.status_var.set(f"Starting… ({len(urls)} URL{'s' if len(urls) > 1 else ''})")
+        self._worker_thread = threading.Thread(
+            target=self._run_batch, args=(urls,), daemon=True)
+        self._worker_thread.start()
+
+    def _pause(self):
+        """Let the current download finish, skip the rest of the batch.
+
+        Partial files are kept as `.temp`; already-completed files in the album
+        are skipped automatically on the next run.
+        """
+        self._stop_requested = True
+        self._log("\n[Pause requested — current download will finish, then stop.]\n",
+                  tag="dim")
+        self.status_var.set("Pausing…")
 
     def _stop(self):
+        """Force-kill the current download immediately.
+
+        The downloader always runs in a child process, so kill() ends it instantly,
+        including any in-flight HTTP reads and thread-pool workers. Partial `.temp`
+        files are left behind and will be re-attempted on the next run.
+        """
         self._stop_requested = True
-        self._log("\n[Stop requested — finishing current download then stopping…]\n")
+        self._force_stop = True
+        self._log("\n[Force stop — killing current download.]\n", tag="fail")
         self.status_var.set("Stopping…")
+        if self._active_proc is not None:
+            try:
+                self._active_proc.kill()
+            except Exception:
+                pass
 
     def _build_downloader_args(self, url, *, include_ui_flag):
         """Build the argv list passed to the downloader for a single URL."""
@@ -493,19 +574,75 @@ class DownloaderUI(ctk.CTk):
 
         return args
 
+    def _stream_subprocess(self, proc):
+        """Read child stdout line-by-line, parse GUI markers, write the rest to log."""
+        for raw in iter(proc.stdout.readline, ""):
+            line = raw.rstrip("\r\n")
+            if not line:
+                self._log("\n")
+                continue
+
+            if line.startswith("__GUI_TOTAL__:"):
+                try:
+                    total = int(line.split(":", 1)[1])
+                except ValueError:
+                    continue
+                with self._active_lock:
+                    self._album_total = total
+                    self._album_done = 0
+                    self._active_files = []
+                self._refresh_album_status()
+                continue
+
+            if line.startswith("__GUI_START__:"):
+                fname = line.split(":", 1)[1]
+                with self._active_lock:
+                    self._active_files.append(fname)
+                self._refresh_album_status()
+                self._log(f"  → {fname}\n")
+                continue
+
+            if line.startswith("__GUI_END__:"):
+                fname = line.split(":", 1)[1]
+                with self._active_lock:
+                    if fname in self._active_files:
+                        self._active_files.remove(fname)
+                    self._album_done += 1
+                self._refresh_album_status()
+                continue
+
+            # Plain log line from the backend — colorize via the IORedirector
+            # classifier logic (same keywords).
+            lower = line.lower()
+            if "download failed" in lower or "error" in lower or "exceeded" in lower:
+                tag = "fail"
+            elif "skipped" in lower or "already been downloaded" in lower:
+                tag = "skip"
+            elif "completed" in lower or "success" in lower:
+                tag = "ok"
+            else:
+                tag = None
+            self._log(line + "\n", tag=tag)
+
+        proc.stdout.close()
+
+    def _self_invoke_cmd(self, extra_args):
+        """Build the command line that re-launches this program in runner mode.
+
+        Works for both the PyInstaller bundle (self-execs the .exe) and source
+        mode (re-invokes python.exe with gui.py)."""
+        sentinel = "--gui-runner"
+        if IS_FROZEN:
+            return [sys.executable, sentinel, *extra_args]
+        script = os.path.abspath(sys.argv[0]) if sys.argv and sys.argv[0] else "gui.py"
+        return [_child_python_exe(), script, sentinel, *extra_args]
+
     def _run_batch(self, urls):
+        import subprocess
         external = self.opt_external_console.get()
         total = len(urls)
         completed = 0
         failed = 0
-
-        if not external:
-            import downloader
-            from downloader import main as downloader_main
-
-            # The downloader's main() calls clear_terminal() — harmless on CLI but
-            # pointless (and visually distracting) from a GUI.
-            downloader.clear_terminal = lambda: None
 
         for i, url in enumerate(urls):
             if self._stop_requested:
@@ -515,36 +652,57 @@ class DownloaderUI(ctk.CTk):
                     f"Stopped — {completed} done, {failed} failed"))
                 break
 
-            self.after(0, lambda n=i: self.status_var.set(
-                f"Downloading {n + 1} / {total}…"))
+            # Reset per-album counters; the LiveManager patch will fill in the
+            # totals once the album page is parsed.
+            with self._active_lock:
+                self._album_total = 0
+                self._album_done = 0
+                self._active_files = []
+            self._url_index = i + 1
+            self._url_total = total
+            self._refresh_album_status()
+
             self._log(f"\n{'─' * 60}\n", tag="header")
             self._log(f"  [{i + 1}/{total}]  {url}\n", tag="header")
             self._log(f"{'─' * 60}\n\n", tag="header")
 
+            self._force_stop = False
             try:
                 if external:
-                    # Launch downloader.py in its own console so the user sees the
-                    # full Rich UI (progress bars + log table) in a separate window.
-                    import subprocess
+                    # Detached console with the full Rich UI (progress bars +
+                    # log table). No stdout capture, no GUI markers.
                     cmd = [sys.executable, "downloader.py",
                            *self._build_downloader_args(url, include_ui_flag=False)]
                     self._log("  (running in detached console window)\n", tag="dim")
                     flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
-                    proc = subprocess.Popen(cmd, creationflags=flags)
-                    rc = proc.wait()
-                    if rc == 0:
-                        completed += 1
-                        self._log(f"\n  [OK]  Finished: {url}\n", tag="ok")
-                    else:
-                        failed += 1
-                        self._log(f"\n  [FAIL]  {url} exited with code {rc}\n",
-                                  tag="fail")
+                    self._active_proc = subprocess.Popen(cmd, creationflags=flags)
+                    rc = self._active_proc.wait()
                 else:
-                    sys.argv = ["downloader.py",
-                                *self._build_downloader_args(url, include_ui_flag=True)]
-                    asyncio.run(downloader_main())
+                    # Hidden child — either the bundled .exe self-invoking in
+                    # runner mode, or `python gui.py --gui-runner …` in source
+                    # mode. Killable instantly via Stop.
+                    cmd = self._self_invoke_cmd(
+                        self._build_downloader_args(url, include_ui_flag=True))
+                    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                    self._active_proc = subprocess.Popen(
+                        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                        text=True, encoding="utf-8", errors="replace",
+                        bufsize=1, creationflags=flags,
+                    )
+                    self._stream_subprocess(self._active_proc)
+                    rc = self._active_proc.wait()
+
+                self._active_proc = None
+                if self._force_stop:
+                    failed += 1
+                    self._log(f"\n  [STOPPED]  {url}\n", tag="fail")
+                elif rc == 0:
                     completed += 1
                     self._log(f"\n  [OK]  Finished: {url}\n", tag="ok")
+                else:
+                    failed += 1
+                    self._log(f"\n  [FAIL]  {url} exited with code {rc}\n",
+                              tag="fail")
 
             except Exception as e:
                 failed += 1
@@ -564,9 +722,61 @@ class DownloaderUI(ctk.CTk):
             if platform.system() == "Windows" and os.path.isdir(dest):
                 os.startfile(dest)
 
+        # Clear the per-file label so it doesn't show stale info
+        with self._active_lock:
+            self._album_total = 0
+            self._album_done = 0
+            self._active_files = []
+        self._refresh_album_status()
+
         self._set_running(False)
 
 
+def _run_as_gui_runner():
+    """Run the downloader inside this process, emitting GUI marker lines.
+
+    Triggered when the executable is launched with `--gui-runner` as the first
+    argument. The bundled .exe self-invokes in this mode so the GUI can spawn
+    download children without needing a separate runner binary alongside.
+    """
+    import asyncio
+    import logging
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
+    from src.downloaders import media_downloader as _md
+    from src.managers import live_manager as _lm
+
+    _orig_add = _lm.LiveManager.add_overall_task
+
+    def _wrap_add(self, description, num_tasks):
+        print(f"__GUI_TOTAL__:{num_tasks}", flush=True)
+        return _orig_add(self, description, num_tasks)
+
+    _lm.LiveManager.add_overall_task = _wrap_add
+
+    _orig_dl = _md.MediaDownloader.download
+
+    def _wrap_dl(self):
+        fname = self.download_info.filename
+        print(f"__GUI_START__:{fname}", flush=True)
+        try:
+            return _orig_dl(self)
+        finally:
+            print(f"__GUI_END__:{fname}", flush=True)
+
+    _md.MediaDownloader.download = _wrap_dl
+
+    import downloader as _d
+    _d.clear_terminal = lambda: None
+    asyncio.run(_d.main())
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[1] == "--gui-runner":
+        # Strip the sentinel so the downstream argparse sees the real args.
+        del sys.argv[1]
+        _run_as_gui_runner()
+        sys.exit(0)
+
     app = DownloaderUI()
     app.mainloop()
