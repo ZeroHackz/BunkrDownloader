@@ -3,6 +3,7 @@ Graphical user interface for the Bunkr Downloader.
 """
 import asyncio
 import io
+import logging
 import os
 import platform
 import sys
@@ -39,10 +40,26 @@ class IORedirector(io.StringIO):
         self.textbox = textbox
         self.root = root
 
+    def _classify(self, text):
+        """Map backend log lines to a color tag based on keywords."""
+        lower = text.lower()
+        if "download failed" in lower or "error" in lower or "exceeded" in lower:
+            return "fail"
+        if "skipped" in lower or "already been downloaded" in lower:
+            return "skip"
+        if "completed" in lower or "success" in lower:
+            return "ok"
+        return None
+
     def write(self, text):
+        tag = self._classify(text)
+
         def _append():
             self.textbox.configure(state="normal")
-            self.textbox.insert("end", text)
+            if tag:
+                self.textbox.insert("end", text, tag)
+            else:
+                self.textbox.insert("end", text)
             self.textbox.see("end")
             self.textbox.configure(state="disabled")
         self.root.after(0, _append)
@@ -97,6 +114,15 @@ class DownloaderUI(ctk.CTk):
 
         # Redirect stdout so downloader print() output flows into the log
         sys.stdout = IORedirector(self.log, self)
+
+        # Route Python logging to the same textbox. The backend's log_manager calls
+        # logging.info(...) when --disable-ui is on; without a handler, those messages
+        # are silently swallowed and the GUI looks frozen during long downloads.
+        gui_handler = logging.StreamHandler(sys.stdout)
+        gui_handler.setFormatter(logging.Formatter("%(message)s"))
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.INFO)
+        root_logger.addHandler(gui_handler)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Tab builders
@@ -193,6 +219,13 @@ class DownloaderUI(ctk.CTk):
         self.log.grid(row=6, column=0, padx=0, pady=(0, 4), sticky="nsew")
         self.log.configure(state="disabled")
 
+        # Color tags for the log textbox (uses underlying Tk Text widget)
+        self.log.tag_config("header", foreground="#7dd3fc")
+        self.log.tag_config("ok", foreground="#86efac")
+        self.log.tag_config("fail", foreground="#fca5a5")
+        self.log.tag_config("skip", foreground="#b5f97a")
+        self.log.tag_config("dim", foreground="#6b7280")
+
     def _build_settings_tab(self):
         tab = self.tab_settings
         tab.grid_columnconfigure(1, weight=1)
@@ -284,6 +317,14 @@ class DownloaderUI(ctk.CTk):
         ctk.CTkCheckBox(tab,
                         text='Save directly to folder (skip the "Downloads" subfolder)',
                         variable=self.opt_no_dl_folder).grid(
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w"); row += 1
+
+        self.opt_external_console = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            tab,
+            text="Show detailed CLI window during downloads "
+                 "(opens a separate console with full progress bars)",
+            variable=self.opt_external_console).grid(
             row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
 
     def _build_about_tab(self):
@@ -357,11 +398,14 @@ class DownloaderUI(ctk.CTk):
     def _on_retries_change(self, value):
         self.retries_label.configure(text=str(int(value)))
 
-    def _log(self, text):
+    def _log(self, text, tag=None):
         """Append text to the log textbox — safe to call from any thread."""
         def _append():
             self.log.configure(state="normal")
-            self.log.insert("end", text)
+            if tag:
+                self.log.insert("end", text, tag)
+            else:
+                self.log.insert("end", text)
             self.log.see("end")
             self.log.configure(state="disabled")
         self.after(0, _append)
@@ -424,54 +468,88 @@ class DownloaderUI(ctk.CTk):
         self._log("\n[Stop requested — finishing current download then stopping…]\n")
         self.status_var.set("Stopping…")
 
-    def _run_batch(self, urls):
-        from downloader import main as downloader_main
+    def _build_downloader_args(self, url, *, include_ui_flag):
+        """Build the argv list passed to the downloader for a single URL."""
+        args = [url]
+        if include_ui_flag:
+            args.append("--disable-ui")
 
+        dest = self.dest_var.get().strip()
+        if dest:
+            args += ["--custom-path", dest]
+
+        include = self.settings_include.get().strip().split()
+        exclude = self.settings_exclude.get().strip().split()
+        if include:
+            args += ["--include"] + include
+        if exclude:
+            args += ["--ignore"] + exclude
+
+        args += ["--max-retries", str(int(self.retries_slider.get()))]
+        if self.opt_no_disk_check.get():
+            args.append("--disable-disk-check")
+        if self.opt_no_dl_folder.get():
+            args.append("--no-download-folder")
+
+        return args
+
+    def _run_batch(self, urls):
+        external = self.opt_external_console.get()
         total = len(urls)
         completed = 0
         failed = 0
 
+        if not external:
+            import downloader
+            from downloader import main as downloader_main
+
+            # The downloader's main() calls clear_terminal() — harmless on CLI but
+            # pointless (and visually distracting) from a GUI.
+            downloader.clear_terminal = lambda: None
+
         for i, url in enumerate(urls):
             if self._stop_requested:
-                self._log(f"\n[Stopped — skipping {total - i} remaining URL(s)]\n")
+                self._log(f"\n[Stopped — skipping {total - i} remaining URL(s)]\n",
+                          tag="dim")
                 self.after(0, lambda: self.status_var.set(
                     f"Stopped — {completed} done, {failed} failed"))
                 break
 
             self.after(0, lambda n=i: self.status_var.set(
                 f"Downloading {n + 1} / {total}…"))
-            self._log(f"\n{'─' * 60}\n")
-            self._log(f"  [{i + 1}/{total}]  {url}\n")
-            self._log(f"{'─' * 60}\n\n")
+            self._log(f"\n{'─' * 60}\n", tag="header")
+            self._log(f"  [{i + 1}/{total}]  {url}\n", tag="header")
+            self._log(f"{'─' * 60}\n\n", tag="header")
 
             try:
-                argv = ["downloader.py", url, "--disable-ui"]
-
-                dest = self.dest_var.get().strip()
-                if dest:
-                    argv += ["--custom-path", dest]
-
-                include = self.settings_include.get().strip().split()
-                exclude = self.settings_exclude.get().strip().split()
-                if include:
-                    argv += ["--include"] + include
-                if exclude:
-                    argv += ["--ignore"] + exclude
-
-                argv += ["--max-retries", str(int(self.retries_slider.get()))]
-                if self.opt_no_disk_check.get():
-                    argv.append("--disable-disk-check")
-                if self.opt_no_dl_folder.get():
-                    argv.append("--no-download-folder")
-
-                sys.argv = argv
-                asyncio.run(downloader_main())
-                completed += 1
-                self._log(f"\n  [OK]  Finished: {url}\n")
+                if external:
+                    # Launch downloader.py in its own console so the user sees the
+                    # full Rich UI (progress bars + log table) in a separate window.
+                    import subprocess
+                    cmd = [sys.executable, "downloader.py",
+                           *self._build_downloader_args(url, include_ui_flag=False)]
+                    self._log("  (running in detached console window)\n", tag="dim")
+                    flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+                    proc = subprocess.Popen(cmd, creationflags=flags)
+                    rc = proc.wait()
+                    if rc == 0:
+                        completed += 1
+                        self._log(f"\n  [OK]  Finished: {url}\n", tag="ok")
+                    else:
+                        failed += 1
+                        self._log(f"\n  [FAIL]  {url} exited with code {rc}\n",
+                                  tag="fail")
+                else:
+                    sys.argv = ["downloader.py",
+                                *self._build_downloader_args(url, include_ui_flag=True)]
+                    asyncio.run(downloader_main())
+                    completed += 1
+                    self._log(f"\n  [OK]  Finished: {url}\n", tag="ok")
 
             except Exception as e:
                 failed += 1
-                self._log(f"\n  [FAIL]  Error downloading {url}:\n     {e}\n")
+                self._log(f"\n  [FAIL]  Error downloading {url}:\n     {e}\n",
+                          tag="fail")
 
         else:
             # Loop completed without break
