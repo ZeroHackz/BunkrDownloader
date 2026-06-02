@@ -4,17 +4,16 @@ from __future__ import annotations
 
 import logging
 import re
-import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
 
+import aiohttp
+from bs4 import BeautifulSoup
+
+from src.file_utils import remove_invalid_characters
 from src.general_utils import fetch_page
 from src.url_utils import get_url_based_filename
 
-from .api_utils import decrypt_url, get_api_response
-
-if TYPE_CHECKING:
-    from bs4 import BeautifulSoup
+from .api_utils import get_api_response
 
 
 def extract_next_album_pages(initial_soup: BeautifulSoup, url: str) -> list[str] | None:
@@ -52,16 +51,30 @@ def extract_item_pages(soup: BeautifulSoup, host_page: str) -> list[str] | None:
 
 
 async def extract_all_album_item_pages(
-    initial_soup: BeautifulSoup, host_page: str, url: str,
+    initial_soup: BeautifulSoup,
+    host_page: str,
+    url: str,
 ) -> list[str]:
     """Collect item page links from an album, including pagination."""
+    if initial_soup is None:
+        error_message = f"Failed to parse album landing page: {url}"
+        raise RuntimeError(error_message)
+
     # Extract item pages from the initial soup
     item_pages = extract_item_pages(initial_soup, host_page)
-    next_album_pages = extract_next_album_pages(initial_soup, url)
+    if item_pages is None:
+        error_message = f"Unable to extract album items from {url}"
+        raise RuntimeError(error_message)
 
+    next_album_pages = extract_next_album_pages(initial_soup, url)
     if next_album_pages is not None:
         for next_page in next_album_pages:
             next_page_soup = await fetch_page(next_page)
+
+            if next_page_soup is None:
+                error_message = f"Failed to load paginated album page: {next_page}"
+                raise RuntimeError(error_message)
+
             next_item_pages = extract_item_pages(next_page_soup, host_page)
             item_pages.extend(next_item_pages)
 
@@ -69,15 +82,27 @@ async def extract_all_album_item_pages(
 
 
 async def get_item_download_link(
+    session: aiohttp.ClientSession,
     item_url: str,
     soup: BeautifulSoup | None = None,
 ) -> str | None:
-    """Retrieve the download link for a specific item from its HTML content."""
-    api_response = get_api_response(item_url, soup=soup)
-    if api_response is None:
-        logging.warning(f"Failed to get API response for {item_url}")
-        return None
-    return decrypt_url(api_response)
+    """Retrieve a signed direct download URL for a Bunkr item page."""
+    if soup is None:
+        async with session.get(item_url) as response:
+            html = await response.text()
+
+        soup = BeautifulSoup(html, "html.parser")
+
+    # Get the signed URL
+    return await get_api_response(session, soup)
+
+
+def decrypt_cf_email(cf_email_hex: str) -> str:
+    """Decrypt a Cloudflare-protected email address."""
+    raw_bytes = bytes.fromhex(cf_email_hex)
+    key = raw_bytes[0]
+    decrypted_bytes = bytes(byte ^ key for byte in raw_bytes[1:])
+    return decrypted_bytes.decode("utf-8")
 
 
 def get_item_filename(item_soup: BeautifulSoup) -> str:
@@ -86,12 +111,21 @@ def get_item_filename(item_soup: BeautifulSoup) -> str:
         "h1",
         {"class": "text-subs font-semibold text-base sm:text-lg truncate"},
     )
-    if item_filename_container is None:
-        random_filename = f"file_{uuid.uuid4().hex[:12]}"
-        logging.warning(f"Failed to extract filename from HTML, using: {random_filename}")
-        return random_filename
+
+    # Decrypt Cloudflare email protection if present
+    cf_email_tag = item_filename_container.find(class_="__cf_email__")
+    if cf_email_tag:
+        cf_email_hex = cf_email_tag.get("data-cfemail")
+        decrypted_email = decrypt_cf_email(cf_email_hex)
+        cf_email_tag.replace_with(decrypted_email)
+
     item_filename = item_filename_container.get_text()
-    return item_filename.encode("latin1").decode("utf-8")
+
+    try:
+        return item_filename.encode("latin1").decode("utf-8")
+
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return item_filename
 
 
 def format_item_filename(original_filename: str, url_based_filename: str) -> str:
@@ -113,21 +147,24 @@ def format_item_filename(original_filename: str, url_based_filename: str) -> str
         return url_based_filename
 
     # Combine the base names with a hyphen and append the extension
-    return f"{original_base}-{url_base}{extension}"
+    valid_original_base = remove_invalid_characters(original_base)
+    return f"{valid_original_base}-{url_base}{extension}"
 
 
 async def get_download_info(item_url: str, item_soup: BeautifulSoup) -> tuple:
     """Gather download information (link and filename) for the item."""
-    item_download_link = await get_item_download_link(item_url, soup=item_soup)
-    
-    # If we couldn't get the download link, return None for both values
-    if item_download_link is None:
-        return None, None
-    
-    item_filename = get_item_filename(item_soup)
+    async with aiohttp.ClientSession() as session:
+        item_download_link = await get_item_download_link(
+            session, item_url, soup=item_soup,
+        )
 
+    item_filename = get_item_filename(item_soup)
     url_based_filename = (
         get_url_based_filename(item_download_link) if item_download_link else None
     )
-    formatted_item_filename = format_item_filename(item_filename, url_based_filename)
+    formatted_item_filename = (
+        format_item_filename(item_filename, url_based_filename)
+        if url_based_filename
+        else item_filename
+    )
     return item_download_link, formatted_item_filename

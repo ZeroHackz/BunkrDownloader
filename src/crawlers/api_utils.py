@@ -1,71 +1,51 @@
-"""Module that provides utilities for interacting with the Bunkr API.
-
-It contains functions to:
-- Request encryption-related metadata (e.g., slug resolution, encrypted URLs).
-- Decrypt encrypted URLs using a time-based secret key derived from the API response.
-- Handle network errors and log warnings or exceptions during API requests.
-"""
+"""Module that provides utilities for interacting with the Bunkr API."""
 
 from __future__ import annotations
 
-import logging
-from base64 import b64decode
-from itertools import cycle
-from math import floor
+import re
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
-import requests
-
-from src.config import BUNKR_API, HTTPStatus
-from src.url_utils import get_identifier
+from src.config import BUNKR_API, JS_VARS_REGEX
 
 if TYPE_CHECKING:
+    import aiohttp
     from bs4 import BeautifulSoup
 
 
-def get_api_response(
-    item_url: str,
-    soup: BeautifulSoup | None = None,
-) -> dict[str, bool | str | int] | None:
-    """Fetch encryption data for a given slug from the Bunkr API."""
-    slug = get_identifier(item_url, soup=soup)
+def unescape_js_path(value: str) -> str:
+    """Unescape common JavaScript-escaped URL fragments."""
+    return value.replace(r"\/", "/")
 
-    try:
-        with requests.Session() as session:
-            response = session.post(BUNKR_API, json={"slug": slug})
 
-            if response.status_code != HTTPStatus.OK:
-                log_message = f"Failed to fetch encryption data for slug '{slug}'"
-                logging.warning(log_message)
-                return None
+def extract_js_vars(soup: BeautifulSoup) -> dict[str, str]:
+    """Extract runtime variables embedded in Bunkr inline JavaScript."""
+    for script in soup.find_all("script"):
+        if script.string and "var jsCDN" in script.string:
+            matches = re.compile(JS_VARS_REGEX, re.DOTALL).findall(script.string)
+            return {key: unescape_js_path(value).strip("\"'") for key, value in matches}
+    return {}
 
-    except requests.RequestException as req_err:
-        log_message = f"Error while requesting encryption data for '{slug}': {req_err}"
-        logging.exception(log_message)
+
+async def get_api_response(
+    session: aiohttp.ClientSession, soup: BeautifulSoup | None = None,
+) -> str | None:
+    """Fetch encryption data from the Bunkr API."""
+    js_vars = extract_js_vars(soup)
+    if not js_vars:
         return None
 
-    return response.json()
-
-
-def decrypt_url(api_response: dict[str, bool | str | int]) -> str | None:
-    """Decrypt an encrypted URL using a time-based secret key."""
-    try:
-        timestamp = api_response["timestamp"]
-        encrypted_bytes = b64decode(api_response["url"])
-
-    except KeyError as key_err:
-        log_message = f"Missing required encryption data field: {key_err}"
-        logging.exception(log_message)
+    js_cdn = js_vars.get("jsCDN")
+    if not js_cdn:
         return None
 
-    # Generate the secret key based on the timestamp
-    time_key = floor(timestamp / 3600)
-    secret_key = f"SECRET_KEY_{time_key}"
+    js_cdn_path = urlparse(js_cdn).path
+    async with session.get(BUNKR_API, params={"path": js_cdn_path}) as response:
+        sign_data = await response.json()
 
-    # Create a cyclic iterator for the secret key
-    secret_key_bytes = secret_key.encode("utf-8")
-    cycled_key = cycle(secret_key_bytes)
+    token = sign_data.get("token")
+    ex = sign_data.get("ex")
+    if token and ex:
+        return f"{js_cdn}?token={token}&ex={ex}"
 
-    # Decrypt the data
-    decrypted_bytes = bytearray(byte ^ next(cycled_key) for byte in encrypted_bytes)
-    return decrypted_bytes.decode("utf-8", errors="ignore")
+    return js_cdn
