@@ -12,7 +12,8 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 
-from src.config import DOWNLOAD_FOLDER, MAX_WORKERS
+from src.config import DOWNLOAD_FOLDER, MAX_RETRIES, MAX_WORKERS
+from src.version import __version__ as BACKEND_VERSION
 
 GUI_VERSION = "2025.11.22"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
@@ -255,6 +256,35 @@ class DownloaderUI(ctk.CTk):
                      text_color="gray50",
                      font=ctk.CTkFont(size=11)).grid(
             row=row, column=0, columnspan=2, padx=4, pady=(2, 0), sticky="w")
+        row += 1
+
+        # ── Advanced ──────────────────────────────────────────────────────────
+        section("Advanced", row); row += 1
+
+        ctk.CTkLabel(tab, text="Max retries per file:", anchor="w").grid(
+            row=row, column=0, padx=(4, 8), pady=4, sticky="w")
+        retries_frame = ctk.CTkFrame(tab, fg_color="transparent")
+        retries_frame.grid(row=row, column=1, padx=(0, 4), pady=4, sticky="ew")
+        self.retries_label = ctk.CTkLabel(retries_frame,
+                                          text=str(MAX_RETRIES), width=24)
+        self.retries_label.pack(side="right")
+        self.retries_slider = ctk.CTkSlider(retries_frame, from_=1, to=10,
+                                            number_of_steps=9,
+                                            command=self._on_retries_change)
+        self.retries_slider.set(MAX_RETRIES)
+        self.retries_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        row += 1
+
+        self.opt_no_disk_check = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(tab, text="Skip disk space check before downloading",
+                        variable=self.opt_no_disk_check).grid(
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w"); row += 1
+
+        self.opt_no_dl_folder = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(tab,
+                        text='Save directly to folder (skip the "Downloads" subfolder)',
+                        variable=self.opt_no_dl_folder).grid(
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
 
     def _build_about_tab(self):
         tab = self.tab_about
@@ -265,21 +295,24 @@ class DownloaderUI(ctk.CTk):
             row=0, column=0, pady=(30, 4))
         ctk.CTkLabel(tab, text=f"GUI v{GUI_VERSION}  ·  by ZeroHackz",
                      font=ctk.CTkFont(size=13), text_color="gray60").grid(
-            row=1, column=0, pady=(0, 20))
+            row=1, column=0, pady=(0, 4))
+        ctk.CTkLabel(tab, text=f"Backend v{BACKEND_VERSION}",
+                     font=ctk.CTkFont(size=11), text_color="gray50").grid(
+            row=2, column=0, pady=(0, 20))
 
         ctk.CTkLabel(tab,
                      text="A clean GUI for downloading Bunkr albums and files.\n"
                           "Supports both single URLs and batch downloads from a text file.",
                      wraplength=480, justify="center").grid(
-            row=2, column=0, pady=(0, 28))
+            row=3, column=0, pady=(0, 28))
 
         ctk.CTkButton(tab, text="View on GitHub →",
                       fg_color="gray25", hover_color="gray35",
                       command=lambda: webbrowser.open(GITHUB_URL)).grid(
-            row=3, column=0, pady=6)
+            row=4, column=0, pady=6)
 
         ctk.CTkLabel(tab, text="MIT License", text_color="gray50").grid(
-            row=4, column=0, pady=(24, 0))
+            row=5, column=0, pady=(24, 0))
 
     # ─────────────────────────────────────────────────────────────────────────
     # UI helpers
@@ -320,6 +353,9 @@ class DownloaderUI(ctk.CTk):
 
     def _on_workers_change(self, value):
         self.workers_label.configure(text=str(int(value)))
+
+    def _on_retries_change(self, value):
+        self.retries_label.configure(text=str(int(value)))
 
     def _log(self, text):
         """Append text to the log textbox — safe to call from any thread."""
@@ -421,6 +457,12 @@ class DownloaderUI(ctk.CTk):
                     argv += ["--include"] + include
                 if exclude:
                     argv += ["--ignore"] + exclude
+
+                argv += ["--max-retries", str(int(self.retries_slider.get()))]
+                if self.opt_no_disk_check.get():
+                    argv.append("--disable-disk-check")
+                if self.opt_no_dl_folder.get():
+                    argv.append("--no-download-folder")
 
                 sys.argv = argv
                 asyncio.run(downloader_main())
