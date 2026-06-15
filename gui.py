@@ -16,7 +16,7 @@ import customtkinter as ctk
 from src.config import DOWNLOAD_FOLDER, MAX_RETRIES, MAX_WORKERS
 from src.version import __version__ as BACKEND_VERSION
 
-GUI_VERSION = "2026.06.02"
+GUI_VERSION = "2026.06.16"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
 
 # When running from a PyInstaller bundle, sys.executable is the GUI's own .exe
@@ -741,6 +741,17 @@ def _run_as_gui_runner():
     """
     import asyncio
     import logging
+
+    # --- FIX: UnicodeEncodeError on filenames containing emoji (e.g. \U0001f618) ---
+    # On Windows, this child process's stdout/stderr default to cp1252, which can't
+    # encode many unicode characters (emoji, etc.) found in real file names.
+    # Reconfigure both streams to UTF-8 with errors="replace" so a bad character
+    # gets substituted instead of crashing the whole download.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    # --- END FIX ---
+
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
     from src.downloaders import media_downloader as _md
@@ -756,8 +767,16 @@ def _run_as_gui_runner():
 
     _orig_dl = _md.MediaDownloader.download
 
+    # --- FIX: sanitize filename for printing (extra safety alongside the
+    # stdout.reconfigure above) so __GUI_START__/__GUI_END__ markers never
+    # crash on characters the console encoding can't handle. ---
+    def _safe_text(s: str) -> str:
+        enc = sys.stdout.encoding or "utf-8"
+        return s.encode(enc, errors="replace").decode(enc)
+    # --- END FIX ---
+
     def _wrap_dl(self):
-        fname = self.download_info.filename
+        fname = _safe_text(self.download_info.filename)  # FIX: was `self.download_info.filename`
         print(f"__GUI_START__:{fname}", flush=True)
         try:
             return _orig_dl(self)
