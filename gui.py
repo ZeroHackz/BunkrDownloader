@@ -1,7 +1,6 @@
 """
 Graphical user interface for the Bunkr Downloader.
 """
-import asyncio
 import io
 import logging
 import os
@@ -273,7 +272,8 @@ class DownloaderUI(ctk.CTk):
                 row=r, column=0, columnspan=2, padx=4, pady=(18, 6), sticky="w")
 
         # ── Download ──────────────────────────────────────────────────────────
-        section("Download", row); row += 1
+        section("Download", row)
+        row += 1
 
         ctk.CTkLabel(tab, text="Default save folder:", anchor="w").grid(
             row=row, column=0, padx=(4, 8), pady=4, sticky="w")
@@ -302,7 +302,8 @@ class DownloaderUI(ctk.CTk):
         row += 1
 
         # ── File filters ──────────────────────────────────────────────────────
-        section("File filters", row); row += 1
+        section("File filters", row)
+        row += 1
 
         ctk.CTkLabel(tab, text="Include only (keywords):", anchor="w").grid(
             row=row, column=0, padx=(4, 8), pady=4, sticky="w")
@@ -326,7 +327,8 @@ class DownloaderUI(ctk.CTk):
         row += 1
 
         # ── Advanced ──────────────────────────────────────────────────────────
-        section("Advanced", row); row += 1
+        section("Advanced", row)
+        row += 1
 
         ctk.CTkLabel(tab, text="Max retries per file:", anchor="w").grid(
             row=row, column=0, padx=(4, 8), pady=4, sticky="w")
@@ -345,13 +347,15 @@ class DownloaderUI(ctk.CTk):
         self.opt_no_disk_check = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(tab, text="Skip disk space check before downloading",
                         variable=self.opt_no_disk_check).grid(
-            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w"); row += 1
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        row += 1
 
         self.opt_no_dl_folder = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(tab,
                         text='Save directly to folder (skip the "Downloads" subfolder)',
                         variable=self.opt_no_dl_folder).grid(
-            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w"); row += 1
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        row += 1
 
         self.opt_external_console = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
