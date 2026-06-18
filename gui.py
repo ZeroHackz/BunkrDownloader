@@ -353,7 +353,8 @@ class DownloaderUI(ctk.CTk):
 
         self.opt_no_dl_folder = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(tab,
-                        text='Save directly to folder (skip the "Downloads" subfolder)',
+                        text='Skip the "Downloads" subfolder when using the default path '
+                             "(a custom save folder already skips it automatically)",
                         variable=self.opt_no_dl_folder).grid(
             row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
         row += 1
@@ -574,7 +575,7 @@ class DownloaderUI(ctk.CTk):
         args += ["--max-retries", str(int(self.retries_slider.get()))]
         if self.opt_no_disk_check.get():
             args.append("--disable-disk-check")
-        if self.opt_no_dl_folder.get():
+        if dest or self.opt_no_dl_folder.get():
             args.append("--no-download-folder")
 
         return args
