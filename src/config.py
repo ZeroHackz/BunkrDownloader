@@ -6,6 +6,7 @@ settings into a single location.
 
 from __future__ import annotations
 
+import re
 from argparse import ArgumentParser
 from collections import deque
 from dataclasses import dataclass, field
@@ -30,10 +31,11 @@ MIN_DISK_SPACE_GB = 3          # Minimum free disk space (in GB) required.
 # ============================
 # API / Status Endpoints
 # ============================
-STATUS_PAGE = "https://status.bunkr.ru/"  # The URL of the status page.
-BUNKR_API = "https://glb-apisign.cdn.cr/sign"
-FALLBACK_DOMAIN = "bunkr.cr"              # The domain used if the main one is offline.
-DOWNLOAD_REFERER = "https://get.bunkrr.su/"
+STATUS_PAGE = "https://status.bunkr.ru/"          # Service status page.
+BUNKR_API = "https://glb-apisign.cdn.cr/sign"     # Signature API endpoint.
+DOWNLOAD_API = "https://dl.bunkr.cr/api/_001_v2"  # Download API endpoint.
+DOWNLOAD_REFERER = "https://get.bunkrr.su/"       # Referer used for downloads requests.
+FALLBACK_DOMAIN = "bunkr.cr"                      # Default fallback domain.
 
 # ============================
 # Regex Patterns
@@ -41,7 +43,8 @@ DOWNLOAD_REFERER = "https://get.bunkrr.su/"
 MEDIA_SLUG_REGEX = r'const\s+slug\s*=\s*"([a-zA-Z0-9_-]+)"'  # Extract media slug.
 VALID_SLUG_REGEX = r"^[a-zA-Z0-9_-]+$"                       # Validate media slug.
 VALID_CHARACTERS_REGEX = r'[<>:"/\\|?*\x00-\x1f]'            # Validate characters.
-JS_VARS_REGEX = r'var\s+(\w+)\s*=\s*(".*?"|\'.*?\'|[^;]+);'
+JS_VARS_REGEX = r'var\s+(\w+)\s*=\s*(".*?"|\'.*?\'|[^;]+);'  # Extract JS variable.
+JS_VARS_COMP = re.compile(JS_VARS_REGEX, re.DOTALL)          # Compiled regex.
 
 # ============================
 # UI & Table Settings

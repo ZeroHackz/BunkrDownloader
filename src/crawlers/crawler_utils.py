@@ -94,7 +94,7 @@ async def get_item_download_link(
         soup = BeautifulSoup(html, "html.parser")
 
     # Get the signed URL
-    return await get_api_response(session, soup)
+    return await get_api_response(session, item_url, soup)
 
 
 def decrypt_cf_email(cf_email_hex: str) -> str:
