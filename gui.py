@@ -1,7 +1,6 @@
 """
 Graphical user interface for the Bunkr Downloader.
 """
-import asyncio
 import io
 import logging
 import os
@@ -16,7 +15,7 @@ import customtkinter as ctk
 from src.config import DOWNLOAD_FOLDER, MAX_RETRIES, MAX_WORKERS
 from src.version import __version__ as BACKEND_VERSION
 
-GUI_VERSION = "2026.06.02"
+GUI_VERSION = "2026.06.16"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
 
 # When running from a PyInstaller bundle, sys.executable is the GUI's own .exe
@@ -273,7 +272,8 @@ class DownloaderUI(ctk.CTk):
                 row=r, column=0, columnspan=2, padx=4, pady=(18, 6), sticky="w")
 
         # ── Download ──────────────────────────────────────────────────────────
-        section("Download", row); row += 1
+        section("Download", row)
+        row += 1
 
         ctk.CTkLabel(tab, text="Default save folder:", anchor="w").grid(
             row=row, column=0, padx=(4, 8), pady=4, sticky="w")
@@ -302,7 +302,8 @@ class DownloaderUI(ctk.CTk):
         row += 1
 
         # ── File filters ──────────────────────────────────────────────────────
-        section("File filters", row); row += 1
+        section("File filters", row)
+        row += 1
 
         ctk.CTkLabel(tab, text="Include only (keywords):", anchor="w").grid(
             row=row, column=0, padx=(4, 8), pady=4, sticky="w")
@@ -326,7 +327,8 @@ class DownloaderUI(ctk.CTk):
         row += 1
 
         # ── Advanced ──────────────────────────────────────────────────────────
-        section("Advanced", row); row += 1
+        section("Advanced", row)
+        row += 1
 
         ctk.CTkLabel(tab, text="Max retries per file:", anchor="w").grid(
             row=row, column=0, padx=(4, 8), pady=4, sticky="w")
@@ -345,13 +347,15 @@ class DownloaderUI(ctk.CTk):
         self.opt_no_disk_check = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(tab, text="Skip disk space check before downloading",
                         variable=self.opt_no_disk_check).grid(
-            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w"); row += 1
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        row += 1
 
         self.opt_no_dl_folder = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(tab,
                         text='Save directly to folder (skip the "Downloads" subfolder)',
                         variable=self.opt_no_dl_folder).grid(
-            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w"); row += 1
+            row=row, column=0, columnspan=2, padx=4, pady=4, sticky="w")
+        row += 1
 
         self.opt_external_console = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(
@@ -741,6 +745,17 @@ def _run_as_gui_runner():
     """
     import asyncio
     import logging
+
+    # --- FIX: UnicodeEncodeError on filenames containing emoji (e.g. \U0001f618) ---
+    # On Windows, this child process's stdout/stderr default to cp1252, which can't
+    # encode many unicode characters (emoji, etc.) found in real file names.
+    # Reconfigure both streams to UTF-8 with errors="replace" so a bad character
+    # gets substituted instead of crashing the whole download.
+    for _stream in (sys.stdout, sys.stderr):
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+    # --- END FIX ---
+
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
 
     from src.downloaders import media_downloader as _md
@@ -756,8 +771,16 @@ def _run_as_gui_runner():
 
     _orig_dl = _md.MediaDownloader.download
 
+    # --- FIX: sanitize filename for printing (extra safety alongside the
+    # stdout.reconfigure above) so __GUI_START__/__GUI_END__ markers never
+    # crash on characters the console encoding can't handle. ---
+    def _safe_text(s: str) -> str:
+        enc = sys.stdout.encoding or "utf-8"
+        return s.encode(enc, errors="replace").decode(enc)
+    # --- END FIX ---
+
     def _wrap_dl(self):
-        fname = self.download_info.filename
+        fname = _safe_text(self.download_info.filename)  # FIX: was `self.download_info.filename`
         print(f"__GUI_START__:{fname}", flush=True)
         try:
             return _orig_dl(self)
