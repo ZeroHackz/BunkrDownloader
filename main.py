@@ -8,35 +8,55 @@ Usage:
     'URLs.txt' and log the session activities in 'session_log.txt'.
 """
 
+from __future__ import annotations
+
 import asyncio
 import sys
-from argparse import Namespace
+from typing import TYPE_CHECKING
 
-from downloader import parse_arguments, validate_and_download
+from downloader import parse_arguments
 from src.bunkr_utils import get_bunkr_status
-from src.config import SESSION_LOG, URLS_FILE
-from src.file_utils import create_urls_file_backup, read_file, write_file
+from src.config import URLS_FILE
+from src.file_utils import create_urls_file_backup, log_session_start, read_file
 from src.general_utils import check_python_version, clear_terminal
-from src.managers.live_manager import initialize_managers
+from src.run_utils import (
+    build_rate_limiter,
+    inspect_urls,
+    log_failed_urls,
+    run_concurrent,
+    run_sequential,
+)
+
+if TYPE_CHECKING:
+    from argparse import Namespace
 
 
-async def process_urls(urls: list[str], args: Namespace) -> None:
-    """Validate and downloads items for a list of URLs."""
+async def process_urls(urls: list[str], args: Namespace) -> list[str]:
+    """Validate and download items for a list of URLs."""
     bunkr_status = get_bunkr_status()
-    live_manager = initialize_managers(disable_ui=args.disable_ui)
 
-    with live_manager.live:
-        for url in urls:
-            await validate_and_download(bunkr_status, url, live_manager, args=args)
+    # Dry-run skips downloads and bypasses Live UI, printing a preview per URL.
+    if getattr(args, "dry_run", False):
+        return await inspect_urls(urls, bunkr_status, args)
 
-        live_manager.stop()
+    # Shared RateLimiter ensures --rate-limit applies across all concurrent downloads.
+    rate_limiter = build_rate_limiter(args)
+    max_concurrent = getattr(args, "max_concurrent_urls", 1) or 1
+
+    # Default, fully sequential path.
+    if max_concurrent <= 1 or len(urls) <= 1:
+        return await run_sequential(urls, bunkr_status, args, rate_limiter)
+
+    # Rich progress assumes only one active album. Concurrent mode uses plain logging
+    # instead to avoid incorrect or garbled progress bars.
+    return await run_concurrent(urls, bunkr_status, args, rate_limiter)
 
 
 async def main() -> None:
     """Run the script and process URLs."""
-    # Clear the terminal and session log file
+    # Clear terminal without wiping logs; append session marker instead.
     clear_terminal()
-    write_file(SESSION_LOG)
+    log_session_start()
 
     # Check Python version and parse arguments
     check_python_version()
@@ -47,10 +67,11 @@ async def main() -> None:
 
     # Read and process URLs, ignoring empty lines
     urls = [url.strip() for url in read_file(URLS_FILE) if url.strip()]
-    await process_urls(urls, args)
+    failed_urls = await process_urls(urls, args)
 
-    # Clear URLs file
-    write_file(URLS_FILE)
+    # URLs.txt is unchanged; reruns skip completed items and only report failures.
+    if failed_urls:
+        log_failed_urls(failed_urls)
 
 
 if __name__ == "__main__":

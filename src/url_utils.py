@@ -13,7 +13,7 @@ import re
 import sys
 import uuid
 from typing import TYPE_CHECKING
-from urllib.parse import unquote, urlparse, urlunparse
+from urllib.parse import parse_qs, unquote, urlencode, urlparse, urlunparse
 
 from .config import (
     FALLBACK_DOMAIN,
@@ -41,6 +41,20 @@ def add_https_prefix(url: str) -> str:
         return f"https://{url}"
 
     return url
+
+
+def remove_page_param(url: str) -> str:
+    """Return the URL without the 'page' query parameter, if present."""
+    parsed_url = urlparse(url)
+    query = parse_qs(parsed_url.query)
+    query.pop("page", None)
+    new_query = urlencode(query, doseq=True)
+    return urlunparse(parsed_url._replace(query=new_query))
+
+
+def normalize_url(url: str) -> str:
+    """Normalize URL by ensuring HTTPS and removing pagination parameters."""
+    return add_https_prefix(remove_page_param(url))
 
 
 def replace_domain_with_fallback(url: str) -> str:
