@@ -16,7 +16,7 @@ import customtkinter as ctk
 from src.config import DOWNLOAD_FOLDER, MAX_RETRIES, MAX_WORKERS
 from src.version import __version__ as BACKEND_VERSION
 
-GUI_VERSION = "2026.06.18"
+GUI_VERSION = "2026.08.03"
 GITHUB_URL = "https://github.com/ZeroHackz/BunkrDownloader"
 
 # When running from a PyInstaller bundle, sys.executable is the GUI's own .exe
